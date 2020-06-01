@@ -129,3 +129,42 @@ lgb_params = {'objective':'cross_entropy','boosting_type':'gbdt','metric':'auc',
               'num_leaves': 15,'colsample_bytree': 0.7,'min_data_in_leaf': 150,'max_depth':-1,'subsample_freq':1,'subsample':0.8,'max_bin':255,'verbose':-1,'seed': 2019}   
 
 clfs, oof_predictions, feature_importance = train_loop(df=data, num_folds=5, useful_features=use_cols_final, target = "deriv_is_sale", params=lgb_params,num_boost_round=10000)
+
+
+def corr_count(corr_result):
+    count_zero = corr_result[["level_0"]].append(corr_result[["level_1"]].rename({"level_1":"level_0"},axis=1))
+    count_zero = count_zero.level_0.value_counts().reset_index().rename({"index":"level_0","level_0":"count_0"},axis=1)
+    count_one = corr_result[["level_1"]].append(corr_result[["level_0"]].rename({"level_0":"level_1"},axis=1))
+    count_one = count_one.level_1.value_counts().reset_index().rename({"index":"level_1","level_1":"count_1"},axis=1)
+    corr_result = corr_result.merge(count_zero,"left","level_0").merge(count_one,"left","level_1")
+    return corr_result
+
+def corr_eliminate(corr_result,k):
+    import random
+    corr_cols = []
+    corr_temp = corr_count(corr_result)
+    while corr_temp["correlation"].max()>k:
+        if corr_temp.iloc[0,3] > corr_temp.iloc[0,4]:
+            corr_cols.append(corr_temp.iloc[0,0])
+        elif corr_temp.iloc[0,3] < corr_temp.iloc[0,4]:
+            corr_cols.append(corr_temp.iloc[0,1])
+        else:
+            corr_cols.append(corr_temp.iloc[0,random.randint(0,1)])
+        corr_temp = corr_temp[(corr_temp.level_0.isin(corr_cols)==False)&(corr_temp.level_1.isin(corr_cols)==False)]
+        corr_temp = corr_count(corr_temp)
+
+    return corr_cols
+
+### corr_result = pd.read_csv("output/corr_result.csv")
+### corr_result = corr_result[corr_result.correlation<1]
+
+        
+corr_matrix = data[use_cols].corr().abs()
+corr = corr_matrix.unstack().sort_values(kind = "quicksort")
+del corr_matrix
+gc.collect()
+corr = pd.DataFrame(data=corr,columns = ['correlation'])
+corr = corr[(corr.correlation > 0.7)&(corr.correlation < 1)].reset_index()
+corr_result = corr.drop_duplicates(subset=['correlation']).sort_values("correlation", ascending = False)
+del corr
+gc.collect()    
