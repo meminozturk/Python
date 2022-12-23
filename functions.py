@@ -247,3 +247,102 @@ corr = corr[(corr.correlation > 0.7)&(corr.correlation < 1)].reset_index()
 corr_result = corr.drop_duplicates(subset=['correlation']).sort_values("correlation", ascending = False)
 del corr
 gc.collect()    
+
+
+
+### Permutation Importance
+
+results = {}
+results['base_score'] = base_auc
+cat_cols = [col for col in x_train.select_dtypes("category").columns]    
+# OOF AUC: 0.923873319287809
+for col in tqdm(imp["feature"].tolist()):
+    if col in cat_cols:
+        continue
+    freezed_col = x_valid[col].copy()
+    x_valid[col] = np.random.permutation(x_valid[col])
+
+    preds = estimator.predict(x_valid)
+    results[col] = metrics.roc_auc_score(y_valid, preds)
+
+    x_valid[col] = freezed_col
+
+    print(f'column: {col} - {results[col]}')
+
+    # bad_features = [k for k in results if results[k] > results['base_score'] + 0.005]
+    
+bad = pd.DataFrame()
+bad["feature"] = results.keys()
+bad["badness"] = results.values()
+bad = bad.sort_values("badness",ascending=False)
+bad
+
+
+### LGBM Ranker
+
+def train_loop_ranker(df, num_folds, useful_features, target, params, verbose_eval, early_stopping_rounds, topk):
+    kfold = GroupKFold(n_splits = num_folds)
+    oof_predictions = np.zeros((df.shape[0]))
+    oof_scores = []
+    holdout_predictions = []
+    feature_importance = pd.DataFrame()
+    rankers = []
+    fold = 0
+    for train_index, valid_index in kfold.split(df[useful_features], df[target], df['product_content_id']):
+        print("### Fold", fold+1, "###")
+        
+        train = df.iloc[train_index].reset_index(drop=True)
+        valid = df.iloc[valid_index].reset_index(drop=True)
+
+        print("Train Shape:", train.shape, "Valid Shape:", valid.shape)
+
+        query_train = train.groupby('product_content_id')['product_review_id'].count().tolist()
+        query_valid = valid.groupby('product_content_id')['product_review_id'].count().tolist()
+
+        from lightgbm import LGBMRanker
+        ranker = LGBMRanker(**params)
+        ranker.fit(train[useful_features], train[target], group = query_train,
+                   eval_set=[(valid[useful_features], valid[target])], eval_group=[query_valid], eval_at=[topk],
+                   verbose=verbose_eval, early_stopping_rounds=early_stopping_rounds)
+
+        rankers.append(ranker)
+        oof_pred = ranker.predict(valid[useful_features])
+        oof_predictions[valid_index] = oof_pred
+
+        oof_score = ranker.best_score_['valid_0'][f'ndcg@{topk}']
+        print(f"Fold {fold+1} NDCG Score", oof_score,"\n")
+        oof_scores.append(oof_score)            
+            
+        imp = pd.DataFrame(sorted(zip(ranker.feature_importances_,useful_features)), columns=["importance","feature"])                
+        imp["fold"] = fold
+        feature_importance = pd.concat([feature_importance, imp], axis=0)
+        fold += 1 
+        gc.collect()
+
+    oof_score = np.mean(oof_scores)
+    print(f"Out of fold NDCG", oof_score)
+        
+    return rankers, oof_predictions, feature_importance
+
+
+data[target_col] = data.groupby('product_content_id')[base_col].rank(method='dense',ascending=True) - 1 
+
+ranker_params= {'n_estimators':500,
+                'n_jobs': 12,
+                'learning_rate': 0.01,
+                'num_leaves': 1024,
+                'min_data_in_leaf': 300,
+                'max_depth': -1,
+                'max_bin': 255,
+                'feature_fraction': 0.75,
+                'bagging_fraction': 1,
+                'bagging_freq': 0,
+                'seed': 2019,
+                'importance_type':'gain',
+                'label_gain': np.arange(0,data[target_col].max()+1),
+                'lambdarank_truncation_level':int(data[target_col].max())
+              }
+
+models, oof_predictions, feature_importance = train_loop_ranker(df=data[mask_click_model].reset_index(drop=True), num_folds=3, 
+                                                                useful_features = feature_list, params = ranker_params, target = target_col, 
+                                                                verbose_eval=100, early_stopping_rounds=None, topk=10)
