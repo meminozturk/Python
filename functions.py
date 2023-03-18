@@ -1,3 +1,7 @@
+#| export https://github.com/fastai/nbdev
+#!pip install jupyter_contrib_nbextensions
+
+
 import sklearn
 import pandas as pd
 import time
@@ -26,6 +30,27 @@ warnings.filterwarnings("ignore")
 
 from IPython.core.display import display, HTML
 display(HTML("<style>.container { width:70% !important; }</style>"))
+
+
+import logging
+import time
+
+def log(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        logging.info(f"Running {func.__name__} with args {args} and kwargs {kwargs}, took {elapsed_time:.4f} seconds")
+        return result
+    return wrapper
+
+@log
+def add(x, y):
+    time.sleep(1)
+    return x + y
+
+result = add(2, 3)
 
 def runQuery(query,connexion):
     cur = connexion.cursor()
